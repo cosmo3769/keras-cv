@@ -14,6 +14,7 @@
 
 import tensorflow as tf
 
+from keras_cv import bounding_box
 from keras_cv.api_export import keras_cv_export
 from keras_cv.layers.preprocessing.base_image_augmentation_layer import (
     BaseImageAugmentationLayer,
@@ -60,6 +61,7 @@ class CutMix(BaseImageAugmentationLayer):
         self._validate_inputs(inputs)
         images = inputs.get("images", None)
         labels = inputs.get("labels", None)
+        bounding_boxes = inputs.get("bounding_boxes", None)
         segmentation_masks = inputs.get("segmentation_masks", None)
 
         (
@@ -88,6 +90,17 @@ class CutMix(BaseImageAugmentationLayer):
                 cut_height,
             )
             inputs["segmentation_masks"] = segmentation_masks
+
+        if bounding_boxes is not None:
+            bounding_boxes = self._update_bounding_boxes(
+                bounding_boxes,
+                permutation_order,
+                random_center_height,
+                random_center_width,
+                cut_width,
+                cut_height,
+            )
+            inputs["bounding_boxes"] = bounding_boxes
 
         inputs["images"] = images
 
@@ -187,15 +200,55 @@ class CutMix(BaseImageAugmentationLayer):
 
         return segmentation_masks
 
+    def _update_bounding_boxes(
+        self,
+        bounding_boxes,
+        permutation_order,
+        random_center_height,
+        random_center_width,
+        cut_width,
+        cut_height,
+    ):
+        cutout_bounding_boxes = tf.gather(bounding_boxes, permutation_order)
+
+        # Calculate adjustments for bounding box coordinates
+        adjust_x = (random_center_width - cut_width // 2) / tf.cast(
+            cut_width, tf.float32
+        )
+        adjust_y = (random_center_height - cut_height // 2) / tf.cast(
+            cut_height, tf.float32
+        )
+
+        # Update bounding box coordinates
+        new_bounding_boxes = []
+        for box, cutout_box in zip(bounding_boxes, cutout_bounding_boxes):
+            new_box = tf.stack(
+                [
+                    adjust_x + cutout_box[0],
+                    adjust_y + cutout_box[1],
+                    adjust_x + cutout_box[2],
+                    adjust_y + cutout_box[3],
+                ]
+            )
+            new_bounding_boxes.append(new_box)
+
+        return new_bounding_boxes
+
     def _validate_inputs(self, inputs):
         images = inputs.get("images", None)
         labels = inputs.get("labels", None)
+        bounding_boxes = inputs.get("bounding_boxes", None)
         segmentation_masks = inputs.get("segmentation_masks", None)
 
-        if images is None or (labels is None and segmentation_masks is None):
+        if images is None or (
+            labels is None
+            and bounding_boxes is None
+            and segmentation_masks is None
+        ):
             raise ValueError(
                 "CutMix expects inputs in a dictionary with format "
                 '{"images": images, "labels": labels}. or'
+                '{"images": images, "bounding_boxes": bounding_boxes}. or'
                 '{"images": images, "segmentation_masks": segmentation_masks}. '
                 f"Got: inputs = {inputs}."
             )
@@ -205,6 +258,9 @@ class CutMix(BaseImageAugmentationLayer):
                 f"CutMix received labels with type {labels.dtype}. "
                 "Labels must be of type float."
             )
+
+        if bounding_boxes is not None:
+            _ = bounding_box.validate_format(bounding_boxes)
 
     def get_config(self):
         config = {
